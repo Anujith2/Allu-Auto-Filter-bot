@@ -310,9 +310,15 @@ async def main():
     await start_web_server()
     await load_old_database_files()
     print("🚀 Bot is running and initialized!")
-    await app.idle()
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-  
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        loop.run_until_complete(app.stop())
+            

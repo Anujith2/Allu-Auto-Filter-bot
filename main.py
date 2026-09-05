@@ -26,7 +26,7 @@ async def get_shortlink(long_url):
     api_url = f"https://{VERIFY_URL}/api?api={VERIFY_API}&url={urllib.parse.quote(long_url)}"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url) as response:
+            async with session.get(api_url, timeout=10) as response:
                 data = await response.json()
                 if data.get("status") == "success":
                     return data.get("shortlink")
@@ -53,20 +53,24 @@ async def start_web_server():
 async def load_old_database_files():
     print("🔄 Loading old files from Database Channel...")
     count = 0
-    async for message in app.get_chat_history(DATABASE_CHANNEL, limit=2000):
-        if message.document or message.video:
-            media = message.document or message.video
-            file_id = media.file_id
-            file_name = media.file_name or message.caption or "Unknown File"
-            file_size_mb = round(media.file_size / (1024 * 1024), 2)
-            
-            FILES_DB[message.id] = {
-                "file_name": file_name,
-                "file_id": file_id,
-                "file_size": f"{file_size_mb} MB"
-            }
-            count += 1
-    print(f"✅ Successfully loaded {count} old files into Bot memory!")
+    try:
+        async for message in app.get_chat_history(DATABASE_CHANNEL, limit=2000):
+            if message.document or message.video:
+                media = message.document or message.video
+                file_id = media.file_id
+                file_name = media.file_name or message.caption or "Unknown File"
+                file_size_mb = round(media.file_size / (1024 * 1024), 2)
+                
+                FILES_DB[message.id] = {
+                    "file_name": file_name,
+                    "file_id": file_id,
+                    "file_size": f"{file_size_mb} MB"
+                }
+                count += 1
+        print(f"✅ Successfully loaded {count} old files into Bot memory!")
+    except Exception as e:
+        print(f"❌ Error loading files from Database Channel: {e}")
+        print("💡 Ensure Bot is ADMIN in DATABASE_CHANNEL and channel ID is correct!")
 
 # --- 3. INDEX NEW FILES FROM DATABASE CHANNEL ---
 
@@ -89,7 +93,12 @@ async def index_database_files(client, message):
 async def start_command(client, message):
     user = message.from_user
     current_time = time.time()
-    bot_username = (await client.get_me()).username
+    
+    try:
+        bot_user = await client.get_me()
+        bot_username = bot_user.username
+    except Exception:
+        bot_username = "bot"
     
     # Send Start Log to Log Channel
     if len(message.command) == 1:
@@ -135,11 +144,15 @@ async def start_command(client, message):
         try:
             msg_id = int(payload)
             file_data = FILES_DB.get(msg_id)
-            file_id = file_data["file_id"] if file_data else payload
+            file_id = file_data["file_id"] if file_data else None
             file_name = file_data["file_name"] if file_data else "Requested File"
         except ValueError:
             file_id = payload
             file_name = "Requested File"
+
+        if not file_id:
+            await message.reply_text("❌ <b>File not found or expired from Database!</b>")
+            return
 
         caption = (
             f"<b>{file_name}</b>\n\n"
@@ -151,17 +164,20 @@ async def start_command(client, message):
             [InlineKeyboardButton("📌 JOIN UPDATES CHANNEL 📌", url=CHNL_LNK)]
         ])
         
-        if "video" in str(file_id):
-            await message.reply_video(video=file_id, caption=caption, reply_markup=buttons)
-        else:
-            await message.reply_document(document=file_id, caption=caption, reply_markup=buttons)
+        try:
+            if "video" in str(file_id):
+                await message.reply_video(video=file_id, caption=caption, reply_markup=buttons)
+            else:
+                await message.reply_document(document=file_id, caption=caption, reply_markup=buttons)
 
-        warning_txt = (
-            "<b>❗ ❗ ❗ IMPORTANT ❗ ❗ ❗</b>\n\n"
-            "<b>THIS MOVIE FILE/VIDEO WILL BE DELETED IN 5 MINUTE 😐 (DUE TO COPYRIGHT ISSUES).</b>\n\n"
-            "<i>PLEASE FORWARD THIS FILE TO SOMEWHERE ELSE AND START DOWNLOADING THERE</i>"
-        )
-        await message.reply_text(warning_txt)
+            warning_txt = (
+                "<b>❗ ❗ ❗ IMPORTANT ❗ ❗ ❗</b>\n\n"
+                "<b>THIS MOVIE FILE/VIDEO WILL BE DELETED IN 5 MINUTE 😐 (DUE TO COPYRIGHT ISSUES).</b>\n\n"
+                "<i>PLEASE FORWARD THIS FILE TO SOMEWHERE ELSE AND START DOWNLOADING THERE</i>"
+            )
+            await message.reply_text(warning_txt)
+        except Exception as e:
+            await message.reply_text(f"❌ Error sending file: {e}")
         return
 
     await message.reply_text(f"<b>HEY {user.first_name}, WELCOME TO BOT!</b>")
@@ -229,7 +245,12 @@ async def auto_filter_group(client, message):
 
     total_files = len(matched_results)
     elapsed_time = round(time.time() - start_time, 2)
-    bot_username = (await client.get_me()).username
+    
+    try:
+        bot_user = await client.get_me()
+        bot_username = bot_user.username
+    except Exception:
+        bot_username = "bot"
 
     header_text = (
         f"<b><u>Anujith Bot 1</u></b>\n\n"
@@ -256,8 +277,13 @@ async def create_code_cmd(client, message):
         await message.reply_text("⚠️ <b>Usage:</b> <code>/createcode days users</code>")
         return
         
-    days = int(message.command[1])
-    max_users = int(message.command[2])
+    try:
+        days = int(message.command[1])
+        max_users = int(message.command[2])
+    except ValueError:
+        await message.reply_text("⚠️ Please enter valid numbers for days and users.")
+        return
+
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     
     REDEEM_CODES[code] = {"days": days, "max_users": max_users, "used_users": []}
@@ -287,7 +313,7 @@ async def redeem_code_cmd(client, message):
         return
 
     code_data["used_users"].append(user.id)
-    VERIFIED_USERS[user.id] = time.time() + (code_data["days"] * 86400 * 365) # Long Validity
+    VERIFIED_USERS[user.id] = time.time() + (code_data["days"] * 86400)
     
     await message.reply_text(f"🎉 <b>Successfully Redeemed {code_data['days']} Days Premium!</b>")
     
@@ -320,5 +346,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
-        loop.run_until_complete(app.stop())
-            
+        if app.is_connected:
+            loop.run_until_complete(app.stop())
+    
